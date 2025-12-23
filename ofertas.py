@@ -13,7 +13,6 @@ ARCHIVO_DATOS = "productos.json"
 # FUNCION: Carga o crea automáticamente el archivo de lista
 def cargar_o_crear_lista():
     if not os.path.exists(ARCHIVO_DATOS):
-        # Si no existe, crea un archivo JSON vacío y lo inicializa
         with open(ARCHIVO_DATOS, "w") as f:
             json.dump({}, f)
         print(f"✨ Archivo {ARCHIVO_DATOS} creado automáticamente.")
@@ -36,7 +35,8 @@ def enviar_a_canal(foto, texto):
 
 def responder_admin(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": ADMIN, "text": texto, "parse_mode": "Markdown"})
+    # Convertimos ADMIN a string por seguridad en el envío
+    requests.post(url, data={"chat_id": str(ADMIN), "text": texto, "parse_mode": "Markdown"})
 
 def obtener_datos_meli(item_id):
     try:
@@ -51,16 +51,18 @@ def obtener_datos_meli(item_id):
     except: return None
 
 def procesar_comandos():
+    # Usamos un offset para no leer mensajes viejos infinitamente
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1"
     try:
         res = requests.get(url).json()
         if res["result"]:
             m = res["result"][-1]["message"]
+            # CAMBIO CLAVE: Convertimos ambos a string para asegurar coincidencia
             uid = str(m["from"]["id"])
             texto = m.get("text", "")
 
-            if uid == ADMIN:
-                # COMANDO /agregar (Detecta y escribe en la lista automáticamente)
+            if uid == str(ADMIN):
+                # COMANDO /agregar
                 if texto.startswith("/agregar"):
                     lineas = texto.split("\n")
                     inicio = 1 if len(lineas) > 1 else 0
@@ -68,46 +70,58 @@ def procesar_comandos():
                     
                     for i in range(inicio, len(lineas)):
                         linea = lineas[i].replace("/agregar ", "").strip()
+                        if not linea: continue
                         try:
                             # Formato: ID,LINK,PRECIO_META
-                            mid, link, precio = linea.split(",")
-                            # Guardamos: [Link, Precio_Meta, Ultimo_Precio_Visto]
-                            PRODUCTOS_AFILIADOS[mid.strip()] = [link.strip(), float(precio), 0]
+                            partes = linea.split(",")
+                            mid = partes[0].strip()
+                            link = partes[1].strip()
+                            
+                            # CAMBIO CLAVE: Limpiamos el precio de comas y signos
+                            precio_limpio = partes[2].replace(",", "").replace("$", "").strip()
+                            precio_meta = float(precio_limpio)
+
+                            PRODUCTOS_AFILIADOS[mid] = [link, precio_meta, 0]
                             nuevos += 1
-                        except: continue
+                        except Exception as e: 
+                            print(f"Error procesando línea: {linea} -> {e}")
+                            continue
                     
-                    # Al guardar, si el archivo no existía, se escribe por primera vez
                     guardar_datos()
                     responder_admin(f"✅ ¡Lista actualizada! Se procesaron {nuevos} productos.")
 
                 elif texto.startswith("/borrar"):
-                    mid = texto.split(" ")[1]
-                    if mid in PRODUCTOS_AFILIADOS:
-                        del PRODUCTOS_AFILIADOS[mid]
-                        guardar_datos()
-                        responder_admin(f"🗑️ Producto `{mid}` eliminado de la lista.")
+                    try:
+                        mid = texto.split(" ")[1]
+                        if mid in PRODUCTOS_AFILIADOS:
+                            del PRODUCTOS_AFILIADOS[mid]
+                            guardar_datos()
+                            responder_admin(f"🗑️ Producto `{mid}` eliminado.")
+                    except: pass
 
                 elif texto == "/lista":
                     total = len(PRODUCTOS_AFILIADOS)
-                    msj = f"📋 *Tu lista de productos ({total}):*\n"
-                    for k, v in PRODUCTOS_AFILIADOS.items():
-                        msj += f"• `{k}` → Meta: ${v[1]}\n"
-                    responder_admin(msj)
+                    if total == 0:
+                        responder_admin("📋 La lista está vacía.")
+                    else:
+                        msj = f"📋 *Tu lista ({total}):*\n"
+                        for k, v in PRODUCTOS_AFILIADOS.items():
+                            msj += f"• `{k}` → Meta: ${v[1]}\n"
+                        responder_admin(msj)
     except Exception as e:
         print(f"Error en comandos: {e}")
 
 # --- BUCLE DE TRABAJO ---
-print("🚀 Bot en línea. Usa /agregar en Telegram para crear tu lista.")
+print(f"🚀 Bot en línea para el Administrador: {ADMIN}")
 
 while True:
     procesar_comandos()
     
-    # Revisión de precios en la lista
+    # Revisión de precios
     for item_id, info in list(PRODUCTOS_AFILIADOS.items()):
-        link_afi, precio_meta, ultimo_precio = info[0], info[1], info[2]
         datos = obtener_datos_meli(item_id)
-        
         if datos:
+            link_afi, precio_meta, ultimo_precio = info[0], info[1], info[2]
             precio_actual = datos['precio']
             enviar_alerta = False
             tipo_alerta = ""
@@ -121,15 +135,14 @@ while True:
             
             if enviar_alerta:
                 caption = (f"{tipo_alerta}\n\n*{datos['titulo']}*\n"
-                           f"💰 *Precio:* ${precio_actual}\n"
-                           f"📉 *Precio anterior:* ${ultimo_precio if ultimo_precio != 0 else '---'}\n\n"
+                           f"💰 *Precio Actual:* ${precio_actual}\n"
+                           f"📉 *Precio Anterior:* ${ultimo_precio if ultimo_precio != 0 else '---'}\n\n"
                            f"🛒 [COMPRAR AQUÍ]({link_afi})")
                 enviar_a_canal(datos['imagen'], caption)
                 
-                # Actualizamos el último precio visto para evitar spam
                 PRODUCTOS_AFILIADOS[item_id][2] = precio_actual
                 guardar_datos()
         
-        time.sleep(2) # Respiro para no saturar la API
+        time.sleep(2) 
 
-    time.sleep(900) # Revisión cada 15 minutos
+    time.sleep(900)
