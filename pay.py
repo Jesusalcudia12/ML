@@ -127,6 +127,7 @@ def webhook():
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, WEBHOOK_SECRET)
         
+        # 1. PAGO EXITOSO (FLUJO NORMAL)
         if event['type'] == 'checkout.session.completed':
             session = event['data']['object']
             uid = session.get('client_reference_id')
@@ -134,13 +135,20 @@ def webhook():
             
             nuevo_saldo = actualizar_saldo(uid, monto_recibido)
             
-            bot.send_message(
-                uid, 
-                f"✅ *¡PAGO CONFIRMADO!*\n\nHas recargado: `${monto_recibido} MXN`\nTu saldo total es: *${nuevo_saldo} MXN*",
-                parse_mode="Markdown"
-            )
-            bot.send_message(ADMIN_ID, f"💰 *NUEVA VENTA:* El usuario {uid} compró ${monto_recibido} MXN.")
-            
+            bot.send_message(uid, f"✅ *PAGO CONFIRMADO*\nRecargaste: `${monto_recibido} MXN`", parse_mode="Markdown")
+            bot.send_message(ADMIN_ID, f"💰 *VENTA:* Usuario {uid} compró ${monto_recibido} MXN.")
+
+        # 2. ALERTA DE RIESGO (STRIKE RADAR)
+        elif event['type'] == 'review.opened':
+            review = event['data']['object']
+            pago_id = review.get('payment_intent')
+            bot.send_message(ADMIN_ID, f"⚠️ *ALERTA DE RIESGO*: El pago `{pago_id}` entró en revisión manual. Entra a Stripe para aprobarlo o rechazarlo.")
+
+        # 3. INTENTO DE FRAUDE DETECTADO
+        elif event['type'] == 'radar.early_fraud_warning':
+            warning = event['data']['object']
+            bot.send_message(ADMIN_ID, f"🚫 *AVISO DE FRAUDE*: Un banco reportó un posible fraude. Revisa el pago `{warning.get('payment_intent')}`.")
+
         return jsonify(success=True), 200
     except Exception as e:
         print(f"Error en Webhook: {e}")
