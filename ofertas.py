@@ -16,9 +16,11 @@ def cargar_datos():
     if os.path.exists(ARCHIVO_DATOS):
         try:
             with open(ARCHIVO_DATOS, "r") as f:
-                return json.load(f)
-        except: return {}
-    return {}
+                data = json.load(f)
+                # Si el archivo era un diccionario antiguo, lo convertimos a lista
+                return list(data.keys()) if isinstance(data, dict) else data
+        except: return []
+    return []
 
 PRODUCTOS = cargar_datos()
 db_lock = threading.Lock()
@@ -33,127 +35,113 @@ def responder_admin(texto):
     try: requests.post(url, data={"chat_id": ADMIN, "text": texto, "parse_mode": "Markdown"}, timeout=5)
     except: pass
 
-# --- NUEVA FUNCIÓN: LIMPIAR Y CORREGIR IDS ---
-def corregir_id(texto):
-    # Si es un link de "sec" o "social", intentamos extraer el ID real
-    if "mercadolibre.com" in texto:
-        try:
-            r = requests.get(texto, timeout=5, allow_redirects=True)
-            url_final = r.url
-            match = re.search(r'MLM-?(\d+)', url_final)
-            if match: return f"MLM{match.group(1)}"
-        except: pass
-    
-    # Si el ID ya es tipo MLM123456, lo dejamos igual
-    if texto.startswith("MLM"):
-        return texto.replace("-", "")
-    
-    return texto # Si no se puede corregir, devolvemos el original
+def extraer_id_real(url):
+    try:
+        # Resolver redirecciones de links cortos (amzn.to, mercadolibre.com/sec, etc)
+        res = requests.get(url, timeout=10, allow_redirects=True)
+        url_final = res.url
+        # Buscar el ID de Mercado Libre (MLM12345)
+        match = re.search(r'MLM-?(\d+)', url_final)
+        if match:
+            return f"MLM{match.group(1)}"
+    except: pass
+    return None
 
-def obtener_meli(item_id):
-    # Intentamos corregir el ID antes de consultar la API
-    id_limpio = corregir_id(item_id)
+def obtener_info_producto(url_p):
+    id_ml = extraer_id_real(url_p)
+    if not id_ml: return None
     
     try:
-        r = requests.get(f"https://api.mercadolibre.com/items/{id_limpio}", timeout=5)
+        # 1. Obtener Título, Precio y Foto
+        r = requests.get(f"https://api.mercadolibre.com/items/{id_ml}", timeout=10)
         item = r.json()
-        
-        if 'title' not in item:
-            print(f"❌ No se pudo encontrar el producto con ID: {item_id}")
-            return None
-        
-        desc_req = requests.get(f"https://api.mercadolibre.com/items/{id_limpio}/description", timeout=5)
-        descripcion = "Sin descripción disponible."
-        if desc_req.status_code == 200:
-            descripcion = desc_req.json().get('plain_text', descripcion)
-        
-        if len(descripcion) > 500: descripcion = descripcion[:500] + "..."
+        if 'title' not in item: return None
 
+        # 2. Obtener Descripción
+        d = requests.get(f"https://api.mercadolibre.com/items/{id_ml}/description", timeout=10)
+        desc = d.json().get('plain_text', "Sin descripción.") if d.status_code == 200 else "Sin descripción."
+        
         return {
             "titulo": item['title'],
             "precio": item['price'],
-            "imagen": item['pictures'][0]['url'],
-            "descripcion": descripcion
+            "foto": item['pictures'][0]['url'],
+            "desc": (desc[:500] + "...") if len(desc) > 500 else desc
         }
     except: return None
 
-# --- HILO 1: ENVÍO AL CANAL (1 MIN POR LINK) ---
-def bucle_envio_canal():
-    print(f"🛰️ Transmisión activa hacia {CANAL}")
+# --- PROCESO DE ENVÍO (CADA 1 MINUTO) ---
+def bucle_envio():
+    print(f"🚀 Bot iniciado. Publicando en {CANAL} cada 60 segundos.")
     while True:
         with db_lock:
-            items = list(PRODUCTOS.items())
+            lista_actual = list(PRODUCTOS)
         
-        if not items:
+        if not lista_actual:
             time.sleep(10)
             continue
 
-        for item_id, info in items:
-            datos = obtener_meli(item_id)
-            if datos:
-                url_img = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-                txt = (f"📦 *{datos['titulo']}*\n\n"
-                       f"📝 *Descripción:*\n_{datos['descripcion']}_\n\n"
-                       f"💰 *Precio:* ${datos['precio']}\n"
-                       f"🛒 [VER EN MERCADO LIBRE]({info[0]})")
+        for url_item in lista_actual:
+            info = obtener_info_producto(url_item)
+            if info:
+                # Construir el mensaje
+                mensaje = (f"📦 *{info['titulo']}*\n\n"
+                           f"📝 *Descripción:*\n_{info['desc']}_\n\n"
+                           f"💰 *Precio:* ${info['precio']}\n"
+                           f"🛒 [VER PRODUCTO AQUÍ]({url_item})")
                 
                 try:
-                    requests.post(url_img, data={
-                        "chat_id": CANAL, "photo": datos['imagen'], 
-                        "caption": txt, "parse_mode": "Markdown"
-                    }, timeout=15)
-                    print(f"✅ Publicado: {item_id}")
-                except: pass
+                    payload = {
+                        "chat_id": CANAL,
+                        "photo": info['foto'],
+                        "caption": mensaje,
+                        "parse_mode": "Markdown"
+                    }
+                    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto", data=payload, timeout=20)
+                    print(f"✅ Publicado OK: {info['titulo'][:30]}")
+                except: print("❌ Error enviando a Telegram")
                 
-                time.sleep(60) # Pausa de 1 minuto por cada link
+                time.sleep(60) # ESPERA DE 1 MINUTO
         time.sleep(5)
 
-# --- HILO 2: COMANDOS ---
+# --- PROCESO DE COMANDOS (INSTANTÁNEO) ---
 def bucle_comandos():
-    last_update_id = 0
+    last_id = 0
     while True:
-        url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_update_id + 1}&timeout=10"
         try:
-            res = requests.get(url).json()
-            if res.get("result"):
-                for update in res["result"]:
-                    last_update_id = update["update_id"]
-                    m = update.get("message")
-                    if not m or str(m["from"]["id"]) != ADMIN: continue
-                    texto = m.get("text", "").strip()
+            r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={last_id+1}&timeout=10", timeout=15).json()
+            if not r.get("result"): continue
+            
+            for up in r["result"]:
+                last_id = up["update_id"]
+                msg = up.get("message")
+                if not msg or str(msg["from"]["id"]) != ADMIN: continue
+                
+                txt = msg.get("text", "").strip()
 
-                    if texto == "/start":
-                        responder_admin("🚀 Bot listo. Ahora intento corregir IDs de cupones automáticamente.")
-                    
-                    elif texto == "/lista":
-                        with db_lock:
-                            count = len(PRODUCTOS)
-                            resumen = "\n".join([f"• `{k}`" for k in PRODUCTOS.keys()])
-                        responder_admin(f"📋 *En lista ({count}):*\n{resumen}")
+                if txt == "/start":
+                    responder_admin("👋 *¡Hola!* Solo pégame el link de Mercado Libre para agregarlo.")
+                
+                elif txt == "/lista":
+                    responder_admin(f"📋 Tienes {len(PRODUCTOS)} links en rotación.")
 
-                    elif texto.startswith("/agregar"):
-                        lineas = texto.split("\n")[1:]
-                        nuevos = 0
-                        with db_lock:
-                            for l in lineas:
-                                try:
-                                    p = l.split(",")
-                                    # Guardamos el ID tal cual, la corrección se hace al momento de enviar
-                                    PRODUCTOS[p[0].strip()] = [p[1].strip(), float(p[2].replace(",","")), 0]
-                                    nuevos += 1
-                                except: continue
-                        guardar_datos()
-                        responder_admin(f"✅ Añadidos {nuevos} productos.")
-                    
-                    elif texto.startswith("/borrar"):
-                        mid = texto.replace("/borrar", "").strip()
-                        with db_lock:
-                            if mid in PRODUCTOS:
-                                del PRODUCTOS[mid]
-                                guardar_datos()
-                                responder_admin(f"🗑️ `{mid}` borrado.")
+                elif txt.startswith("http"):
+                    with db_lock:
+                        if txt not in PRODUCTOS:
+                            PRODUCTOS.append(txt)
+                            guardar_datos()
+                            responder_admin("✅ Link guardado. Se publicará en su turno.")
+                        else:
+                            responder_admin("⚠️ Ese link ya existe.")
+                
+                elif txt.startswith("/borrar"):
+                    target = txt.replace("/borrar", "").strip()
+                    with db_lock:
+                        if target in PRODUCTOS:
+                            PRODUCTOS.remove(target)
+                            guardar_datos()
+                            responder_admin("🗑️ Link eliminado.")
         except: time.sleep(2)
 
 if __name__ == "__main__":
-    threading.Thread(target=bucle_envio_canal, daemon=True).start()
+    threading.Thread(target=bucle_envio, daemon=True).start()
     bucle_comandos()
