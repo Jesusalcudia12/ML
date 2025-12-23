@@ -7,7 +7,7 @@ import os
 from telebot import types
 
 # --- CONFIGURACIÓN (REEMPLAZA CON TUS DATOS) ---
-stripe.api_key = "sk_live_..."  # Tu llave secreta de Stripe
+stripe.api_key = "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"  # Tu llave secreta de Stripe
 bot = telebot.TeleBot("8531717834:AAExJEm2EI6Zce7ZKtyJfKb-qHPuMbCZyoE") # Tu Token de BotFather
 WEBHOOK_SECRET = "whsec_CsvgZeegdGER1beChBHwHNDO8jb5z5ba" # Tu secreto de webhook de Stripe
 ADMIN_ID = "6280594821" # Tu ID numérico (puedes verlo con /perfil)
