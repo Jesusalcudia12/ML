@@ -11,35 +11,20 @@ ADMIN = str(config.ID_ADMIN).strip()
 CANAL = config.ID_CANAL
 ARCHIVO_DATOS = "productos.json"
 
-# MODIFICADO: Solo lee el archivo existente. Si no existe, lanza un aviso en Termux.
 def cargar_datos_existentes():
     if os.path.exists(ARCHIVO_DATOS):
         try:
             with open(ARCHIVO_DATOS, "r") as f:
-                data = json.load(f)
-                print(f"✅ Archivo {ARCHIVO_DATOS} cargado con éxito.")
-                return data
-        except Exception as e:
-            print(f"⚠️ Error al leer el archivo: {e}")
-            return {}
-    else:
-        print(f"⚠️ El archivo {ARCHIVO_DATOS} no se encontró en la carpeta. Se usará una lista vacía temporal.")
-        return {}
+                return json.load(f)
+        except: return {}
+    return {}
 
-# El bot inicia cargando lo que ya tienes guardado
 PRODUCTOS = cargar_datos_existentes()
 LAST_UPDATE_ID = 0 
 
 def guardar_datos():
-    # Esta función actualiza el archivo productos.json con la nueva información
     with open(ARCHIVO_DATOS, "w") as f:
         json.dump(PRODUCTOS, f, indent=4)
-    print("💾 Archivo productos.json actualizado.")
-
-def enviar_canal(foto, texto):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
-    payload = {"chat_id": CANAL, "photo": foto, "caption": texto, "parse_mode": "Markdown"}
-    requests.post(url, data=payload)
 
 def responder(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
@@ -47,7 +32,8 @@ def responder(texto):
 
 def obtener_meli(item_id):
     try:
-        item = requests.get(f"https://api.mercadolibre.com/items/{item_id}").json()
+        r = requests.get(f"https://api.mercadolibre.com/items/{item_id}", timeout=5)
+        item = r.json()
         return {
             "titulo": item['title'],
             "precio": item['price'],
@@ -55,31 +41,45 @@ def obtener_meli(item_id):
         }
     except: return None
 
-def bucle_monitoreo():
+# --- BUCLE DE ESCANEO (ENVÍO CADA MINUTO POR LINK) ---
+def bucle_escaneo_precios():
+    print("🛰️ Escáner de envío por minuto iniciado...")
     while True:
         if not PRODUCTOS:
+            print("💤 Esperando productos en productos.json...")
             time.sleep(30)
             continue 
 
-        items = list(PRODUCTOS.items())
-        for item_id, info in items:
+        items_a_revisar = list(PRODUCTOS.items())
+        for item_id, info in items_a_revisar:
             datos = obtener_meli(item_id)
             if datos:
-                link_afi, precio_meta, ultimo_precio = info[0], info[1], info[2]
                 precio_actual = datos['precio']
+                link_afi = info[0]
                 
-                if precio_actual <= precio_meta:
-                    txt = f"🚨 *OFERTA ALCANZADA*\n\n{datos['titulo']}\n💰 *Precio:* ${precio_actual}\n🛒 [COMPRAR AQUÍ]({link_afi})"
-                    enviar_canal(datos['imagen'], txt)
-                    PRODUCTOS[item_id][2] = precio_actual 
-                    guardar_datos()
+                url_img = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+                txt = (f"📦 *PRODUCTO EN MONITOREO*\n\n"
+                       f"{datos['titulo']}\n"
+                       f"💰 *Precio Actual:* ${precio_actual}\n"
+                       f"🛒 [COMPRAR AHORA]({link_afi})")
                 
-            time.sleep(5) 
-        time.sleep(600) 
+                requests.post(url_img, data={
+                    "chat_id": CANAL, 
+                    "photo": datos['imagen'], 
+                    "caption": txt, 
+                    "parse_mode": "Markdown"
+                })
+                print(f"✅ Enviado al canal: {item_id}. Esperando 1 minuto para el siguiente...")
+                
+                # ESPERA DE 1 MINUTO POR CADA LINK
+                time.sleep(60) 
+        
+        print("🏁 Se recorrió toda la lista. Reiniciando ciclo de envíos...")
 
-def procesar_comandos():
+# --- BUCLE DE COMANDOS (RESPUESTA INMEDIATA) ---
+def atender_comandos_inmediatos():
     global LAST_UPDATE_ID, PRODUCTOS
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={LAST_UPDATE_ID + 1}&timeout=20"
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={LAST_UPDATE_ID + 1}&timeout=5"
     try:
         res = requests.get(url).json()
         if res.get("result"):
@@ -90,36 +90,33 @@ def procesar_comandos():
                 texto = m.get("text", "").strip()
 
                 if texto == "/start":
-                    responder("👋 Bot conectado al archivo productos.json")
-                
+                    responder("🚀 *Bot configurado: Envío cada 1 minuto por link.*")
                 elif texto == "/lista":
-                    if not PRODUCTOS:
-                        responder("📋 El archivo está vacío.")
-                    else:
-                        msj = f"📋 *Productos en archivo:* {len(PRODUCTOS)}\n" + "\n".join([f"• `{k}`" for k in PRODUCTOS.keys()])
-                        responder(msj)
-
+                    msj = f"📋 *Productos actuales:* {len(PRODUCTOS)}"
+                    responder(msj)
                 elif texto.startswith("/agregar"):
                     lineas = texto.split("\n")[1:]
-                    nuevos = 0
                     for l in lineas:
                         try:
                             p = l.split(",")
-                            pid = p[0].strip()
-                            # Agregamos al diccionario y luego guardamos en el archivo existente
-                            PRODUCTOS[pid] = [p[1].strip(), float(p[2].replace(",","")), 0]
-                            nuevos += 1
+                            PRODUCTOS[p[0].strip()] = [p[1].strip(), float(p[2].replace(",","")), 0]
                         except: continue
-                    
-                    if nuevos > 0:
-                        guardar_datos() # Aquí es donde se escribe en tu productos.json
-                        responder(f"✅ Se añadieron {nuevos} productos al archivo existente.")
+                    guardar_datos()
+                    responder("✅ Productos añadidos. Se incluirán en la rotación de 1 minuto.")
+                elif texto.startswith("/borrar"):
+                    mid = texto.replace("/borrar", "").strip()
+                    if mid in PRODUCTOS:
+                        del PRODUCTOS[mid]
+                        guardar_datos()
+                        responder(f"🗑️ `{mid}` eliminado.")
     except: pass
 
 if __name__ == "__main__":
-    t = threading.Thread(target=bucle_monitoreo, daemon=True)
-    t.start()
-    print(f"🔥 Bot vinculado a productos.json. Esperando comandos...")
+    # Iniciar monitoreo en segundo plano
+    threading.Thread(target=bucle_escaneo_precios, daemon=True).start()
+    print("🔥 Bot iniciado. Prioridad de comandos: ALTA. Frecuencia de envío: 1 min/link.")
+    
     while True:
-        procesar_comandos()
-        time.sleep(0.5)
+        atender_comandos_inmediatos()
+        time.sleep(0.1)
+                    
