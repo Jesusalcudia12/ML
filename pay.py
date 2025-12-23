@@ -52,8 +52,7 @@ def ver_perfil(message):
 @bot.message_handler(commands=['comprar'])
 def menu_pagos(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
-    # Definimos los montos disponibles
-    montos = [100, 500, 1000, 2000, 5000]
+    montos = [100, 200, 500, 1000, 2000, 3000, 1]
     btns = [types.InlineKeyboardButton(f"${m} MXN", callback_data=f"pago_{m}") for m in montos]
     markup.add(*btns)
     
@@ -67,8 +66,13 @@ def menu_pagos(message):
 @bot.callback_query_handler(func=lambda call: call.data.startswith('pago_'))
 def crear_sesion(call):
     monto = int(call.data.split('_')[1])
-    bot.answer_callback_query(call.id, "Generando link seguro...")
     
+    # --- LÍNEA 70 CORREGIDA: Protegemos la respuesta al botón ---
+    try:
+        bot.answer_callback_query(call.id, "Generando link seguro...")
+    except Exception:
+        pass # Evita que el bot se detenga si Telegram tarda en responder
+
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
@@ -96,7 +100,8 @@ def crear_sesion(call):
             reply_markup=markup
         )
     except Exception as e:
-        bot.send_message(call.message.chat.id, "❌ Error al conectar con Stripe.")
+        print(f"Error en Stripe: {e}")
+        bot.send_message(call.message.chat.id, "❌ Error al conectar con Stripe. Revisa la terminal.")
 
 # --- COMANDOS DE ADMINISTRADOR ---
 @bot.message_handler(commands=['dar'])
@@ -105,18 +110,16 @@ def dar_creditos(message):
         return bot.reply_to(message, "❌ No tienes permiso.")
     
     try:
-        # Uso: /dar [ID] [monto]
         partes = message.text.split()
         target_id = partes[1]
         monto = float(partes[2])
-        
         nuevo_total = actualizar_saldo(target_id, monto)
         bot.send_message(ADMIN_ID, f"✅ Has dado ${monto} al usuario {target_id}. Nuevo saldo: ${nuevo_total}")
         bot.send_message(target_id, f"🎁 *¡Has recibido un regalo!*\nUn administrador te ha enviado ${monto} créditos.", parse_mode="Markdown")
     except:
         bot.reply_to(message, "Uso: `/dar 12345678 500`", parse_mode="Markdown")
 
-# --- WEBHOOK (RECEPCIÓN DE PAGOS REALES) ---
+# --- WEBHOOK (RECEPCIÓN DE PAGOS) ---
 @app.route('/webhook', methods=['POST'])
 def webhook():
     payload = request.data
@@ -129,16 +132,13 @@ def webhook():
             uid = session.get('client_reference_id')
             monto_recibido = session.get('amount_total') / 100
             
-            # Sumar saldo al archivo JSON
             nuevo_saldo = actualizar_saldo(uid, monto_recibido)
             
-            # Avisar al usuario
             bot.send_message(
                 uid, 
                 f"✅ *¡PAGO CONFIRMADO!*\n\nHas recargado: `${monto_recibido} MXN`\nTu saldo total es: *${nuevo_saldo} MXN*",
                 parse_mode="Markdown"
             )
-            # Avisar al administrador
             bot.send_message(ADMIN_ID, f"💰 *NUEVA VENTA:* El usuario {uid} compró ${monto_recibido} MXN.")
             
         return jsonify(success=True), 200
@@ -146,10 +146,9 @@ def webhook():
         print(f"Error en Webhook: {e}")
         return jsonify(success=False), 400
 
-# --- INICIO DEL SISTEMA ---
+# --- INICIO ---
 if __name__ == "__main__":
-    # Iniciar Flask (Webhook) en un hilo para no bloquear al Bot
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000), daemon=True).start()
-    
-    print("🚀 Servidor Webhook y Bot iniciados con éxito.")
+    # Flask corre en puerto 5000 para ngrok
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False), daemon=True).start()
+    print("🚀 Servidor Webhook y Bot iniciados.")
     bot.infinity_polling()
