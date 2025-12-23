@@ -3,81 +3,107 @@ import time
 import json
 import os
 import config
+import threading
 
 # --- CONFIGURACIÓN ---
 TOKEN = config.TOKEN_TELEGRAM
-ADMIN = str(config.ID_ADMIN).strip() # Forzamos a texto y limpiamos espacios
+ADMIN = str(config.ID_ADMIN).strip()
 CANAL = config.ID_CANAL
 ARCHIVO_DATOS = "productos.json"
 
-def cargar_o_crear_lista():
+def cargar_datos():
     if not os.path.exists(ARCHIVO_DATOS):
-        with open(ARCHIVO_DATOS, "w") as f:
-            json.dump({}, f)
+        with open(ARCHIVO_DATOS, "w") as f: json.dump({}, f)
         return {}
-    with open(ARCHIVO_DATOS, "r") as f:
-        return json.load(f)
+    with open(ARCHIVO_DATOS, "r") as f: 
+        try: return json.load(f)
+        except: return {}
 
-PRODUCTOS_AFILIADOS = cargar_o_crear_lista()
+PRODUCTOS = cargar_datos()
+LAST_UPDATE_ID = 0 
 
 def guardar_datos():
     with open(ARCHIVO_DATOS, "w") as f:
-        json.dump(PRODUCTOS_AFILIADOS, f, indent=4)
+        json.dump(PRODUCTOS, f, indent=4)
 
-def responder_admin(texto):
+def enviar_canal(foto, texto):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    payload = {"chat_id": CANAL, "photo": foto, "caption": texto, "parse_mode": "Markdown"}
+    requests.post(url, data=payload)
+
+def responder(texto):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": ADMIN, "text": texto, "parse_mode": "Markdown"}
-    r = requests.post(url, data=payload)
-    print(f"DEBUG: Respuesta enviada al Admin. Status: {r.status_code}")
+    requests.post(url, data={"chat_id": ADMIN, "text": texto, "parse_mode": "Markdown"})
 
+def obtener_meli(item_id):
+    try:
+        item = requests.get(f"https://api.mercadolibre.com/items/{item_id}").json()
+        return {
+            "titulo": item['title'],
+            "precio": item['price'],
+            "imagen": item['pictures'][0]['url']
+        }
+    except: return None
+
+# --- TAREA EN SEGUNDO PLANO (MONITOREO) ---
+def bucle_monitoreo():
+    print("🔎 Monitoreo de precios iniciado...")
+    while True:
+        items = list(PRODUCTOS.items())
+        for item_id, info in items:
+            datos = obtener_meli(item_id)
+            if datos:
+                link_afi, precio_meta, ultimo_precio = info[0], info[1], info[2]
+                precio_actual = datos['precio']
+                
+                # Lógica de envío al canal
+                if precio_actual <= precio_meta:
+                    txt = f"🚨 *OFERTA ALCANZADA*\n\n{datos['titulo']}\n💰 *Precio:* ${precio_actual}\n🛒 [COMPRAR AQUÍ]({link_afi})"
+                    enviar_canal(datos['imagen'], txt)
+                    PRODUCTOS[item_id][2] = precio_actual # Evita spam
+                    guardar_datos()
+                
+            time.sleep(5) # Pausa entre productos para evitar bloqueo de API
+        time.sleep(600) # Espera 10 min tras revisar toda la lista
+
+# --- TAREA DE COMANDOS (INSTANTÁNEO) ---
 def procesar_comandos():
-    # El parámetro timeout ayuda a que el bot responda más rápido
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1&timeout=10"
+    global LAST_UPDATE_ID, PRODUCTOS
+    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset={LAST_UPDATE_ID + 1}&timeout=20"
     try:
         res = requests.get(url).json()
         if res.get("result"):
-            m = res["result"][-1].get("message")
-            if not m: return
-            
-            uid = str(m["from"]["id"]).strip()
-            texto = m.get("text", "")
-            
-            # ESTO APARECERÁ EN TERMUX SIEMPRE QUE ALGUIEN ESCRIBA
-            print(f"📩 Mensaje recibido de ID: {uid} | Contenido: {texto}")
+            for update in res["result"]:
+                LAST_UPDATE_ID = update["update_id"]
+                m = update.get("message")
+                if not m or str(m["from"]["id"]) != ADMIN: continue
+                texto = m.get("text", "").strip()
 
-            if uid == ADMIN:
                 if texto == "/start":
-                    responder_admin("👋 ¡Hola! Soy tu bot de ofertas. Ya te reconozco como Administrador.")
-                
+                    responder("👋 Monitor activo. Canal: " + CANAL)
                 elif texto == "/lista":
-                    total = len(PRODUCTOS_AFILIADOS)
-                    if total == 0:
-                        responder_admin("📋 La lista está vacía actualmente.")
-                    else:
-                        msj = f"📋 *Tu lista ({total}):*\n"
-                        for k, v in PRODUCTOS_AFILIADOS.items():
-                            msj += f"• `{k}` → ${v[1]}\n"
-                        responder_admin(msj)
-
+                    msj = f"📋 *Lista ({len(PRODUCTOS)}):*\n" + "\n".join([f"• `{k}`" for k in PRODUCTOS.keys()])
+                    responder(msj if PRODUCTOS else "Vacía.")
+                elif texto.startswith("/borrar"):
+                    mid = texto.replace("/borrar", "").strip()
+                    if mid in PRODUCTOS:
+                        del PRODUCTOS[mid]
+                        guardar_datos(); responder(f"🗑️ `{mid}` borrado.")
                 elif texto.startswith("/agregar"):
-                    lineas = texto.split("\n")
-                    nuevos = 0
-                    for i in range(1, len(lineas)):
+                    for l in texto.split("\n")[1:]:
                         try:
-                            mid, link, precio = lineas[i].split(",")
-                            precio_limpio = precio.replace(",", "").replace("$", "").strip()
-                            PRODUCTOS_AFILIADOS[mid.strip()] = [link.strip(), float(precio_limpio), 0]
-                            nuevos += 1
+                            p = l.split(",")
+                            PRODUCTOS[p[0].strip()] = [p[1].strip(), float(p[2].replace(",","")), 0]
                         except: continue
-                    guardar_datos()
-                    responder_admin(f"✅ Se agregaron {nuevos} productos.")
-            else:
-                print(f"🚫 Acceso denegado para el ID: {uid}. El ADMIN configurado es: {ADMIN}")
-    except Exception as e:
-        print(f"❌ Error de conexión: {e}")
+                    guardar_datos(); responder("✅ Productos agregados.")
+    except: pass
 
-print(f"🚀 Bot en línea. Esperando mensajes del Admin ID: {ADMIN}...")
-
-while True:
-    procesar_comandos()
-    time.sleep(1) # Revisa comandos cada segundo
+# --- INICIO ---
+if __name__ == "__main__":
+    # Iniciamos el monitoreo en un hilo separado
+    threading.Thread(target=bucle_monitoreo, daemon=True).start()
+    print(f"🔥 Bot listo para el Admin {ADMIN}")
+    
+    # El hilo principal se queda atendiendo comandos
+    while True:
+        procesar_comandos()
