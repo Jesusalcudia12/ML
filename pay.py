@@ -7,9 +7,9 @@ from telebot import types
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-TOKEN = "TU_TOKEN_TELEGRAM"
+TOKEN = "8531717834:AAExJEm2EI6Zce7ZKtyJfKb-qHPuMbCZyoE"
 ADMIN_ID = "6280594821"  # Tu ID de Telegram
-NOWPAYMENTS_API_KEY = "TU_NOWPAYMENTS_KEY"
+PLISIO_API_KEY = "TU_API_KEY_DE_PLISIO"
 
 # Estrategias de límites para evitar KYC
 LIMITE_KYC_USD = 50.0 
