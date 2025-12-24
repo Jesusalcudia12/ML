@@ -29,25 +29,21 @@ def guardar_db(db):
     with open(DB_FILE, "w") as f: json.dump(db, f, indent=4)
 
 # --- PASARELA DE PAGO (ENTRADA: CC -> BINANCE USDT) ---
-def crear_orden_nowpayments(monto, moneda, uid):
-    url = "https://api.nowpayments.io/v1/payment"
-    headers = {
-        'x-api-key': NOWPAYMENTS_API_KEY,
-        'Content-Type': 'application/json'
+def crear_orden_plisio(monto, moneda, uid):
+    url = "https://plisio.net/api/v1/operations/withdraw" # Endpoint de ejemplo
+    params = {
+        'api_key': 'TU_API_KEY_DE_PLISIO',
+        'currency': 'USDT_TRC20',
+        'amount': monto,
+        'type': 'cashout',
+        'order_number': f"PAY_{uid}_{int(time.time())}",
+        'description': 'Servicios Digitales Nexus'
     }
-    data = {
-        "price_amount": monto,
-        "price_currency": moneda.lower(),
-        "pay_currency": "usdttrc20", # Recibes USDT en tu Binance
-        "order_id": f"PAY_{uid}_{int(time.time())}",
-        "order_description": "Donación por Activos Digitales",
-        "buy_with_fiat": True
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=10)
-        return response.json()
-    except:
-        return None
+    response = requests.get("https://plisio.net/api/v1/invoices/new", params=params)
+     return response.json()
+
+except:
+     return None
 
 # --- COMANDOS DE INICIO ---
 @bot.message_handler(commands=['start'])
