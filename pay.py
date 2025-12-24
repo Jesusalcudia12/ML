@@ -1,28 +1,23 @@
-import stripe
-import paypalrestsdk
 import telebot
 import json
 import os
-import random
 import time
+import requests
 from telebot import types
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-stripe.api_key = "TU_STRIPE_KEY"
-paypalrestsdk.configure({
-    "mode": "live", # "sandbox" para pruebas
-    "client_id": "TU_PAYPAL_CLIENT_ID",
-    "client_secret": "TU_PAYPAL_CLIENT_SECRET"
-})
+TOKEN = "TU_TOKEN_TELEGRAM"
+ADMIN_ID = "6280594821"  # Tu ID de Telegram
+NOWPAYMENTS_API_KEY = "TU_NOWPAYMENTS_KEY"
 
-bot = telebot.TeleBot("TU_TOKEN_TELEGRAM")
-DB_FILE = "database_segura.json"
-ADMIN_ID = "6280594821" 
+# Estrategias de límites para evitar KYC
+LIMITE_KYC_USD = 50.0 
+LIMITE_KYC_MXN = 900.0
 COMISION_RETIRO = 0.15 # 15%
 
-# Concepto legal para evitar reclamos bancarios
-CONCEPTO_COBRO = "Donación voluntaria para soporte de proyecto digital"
+bot = telebot.TeleBot(TOKEN)
+DB_FILE = "database_segura.json"
 
 # --- GESTIÓN DE BASE DE DATOS ---
 def cargar_db():
@@ -33,199 +28,183 @@ def cargar_db():
 def guardar_db(db):
     with open(DB_FILE, "w") as f: json.dump(db, f, indent=4)
 
-def registrar_evento(uid, tipo, monto, estado):
-    db = cargar_db()
-    uid = str(uid)
-    if "historial" not in db[uid]: db[uid]["historial"] = []
-    evento = {
-        "fecha": datetime.now().strftime("%d/%m/%Y %H:%M"),
-        "tipo": tipo,
-        "monto": monto,
-        "estado": estado
+# --- PASARELA DE PAGO (ENTRADA: CC -> BINANCE USDT) ---
+def crear_orden_nowpayments(monto, moneda, uid):
+    url = "https://api.nowpayments.io/v1/payment"
+    headers = {
+        'x-api-key': NOWPAYMENTS_API_KEY,
+        'Content-Type': 'application/json'
     }
-    db[uid]["historial"].append(evento)
-    guardar_db(db)
+    data = {
+        "price_amount": monto,
+        "price_currency": moneda.lower(),
+        "pay_currency": "usdttrc20", # Recibes USDT en tu Binance
+        "order_id": f"PAY_{uid}_{int(time.time())}",
+        "order_description": "Donación por Activos Digitales",
+        "buy_with_fiat": True
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        return response.json()
+    except:
+        return None
 
-# --- INICIO Y REGISTRO ---
+# --- COMANDOS DE INICIO ---
 @bot.message_handler(commands=['start'])
-def start_seguro(message):
+def start(message):
     db = cargar_db()
     uid = str(message.from_user.id)
     if uid not in db:
         db[uid] = {
             "saldo": 0, 
-            "nombre": message.from_user.first_name,
+            "nombre": message.from_user.first_name, 
             "racha_derrotas": 0,
+            "compras_exitosas": 0,
             "historial": []
         }
         guardar_db(db)
-
+    
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("👤 Perfil", "💳 Recargar")
+    markup.add("👤 Perfil", "💎 Recargar")
     markup.add("🎲 Jugar", "🏦 Retirar")
-    markup.add("📜 Historial")
     
     bot.send_message(message.chat.id, 
         f"👋 ¡Bienvenido, {message.from_user.first_name}!\n\n"
-        f"⚠️ *AVISO LEGAL:* Al usar este bot, usted acepta que toda recarga es una **{CONCEPTO_COBRO}** no reembolsable.\n\n"
         f"💰 Tu saldo: `${db[uid]['saldo']} MXN`", 
         parse_mode="Markdown", reply_markup=markup)
 
 # --- SISTEMA DE JUEGO (CASA GANA + ENGANCHE) ---
 @bot.message_handler(func=lambda m: m.text == "🎲 Jugar")
 def menu_juego(message):
-    bot.send_message(message.chat.id, "🎰 *DADOS CASINO*\n\nGanas si sale **6**.\nUsa `/apostar [monto]` para jugar.\nEjemplo: `/apostar 10`", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "🎰 *DADOS CASINO*\n\nGanas si sale **6**.\nUsa `/apostar [monto]`\nEjemplo: `/apostar 50`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['apostar'])
 def apostar_coins(message):
     db = cargar_db()
     uid = str(message.from_user.id)
-    user = db.get(uid)
-
+    if uid not in db: return
+    
     try:
         monto_apuesta = float(message.text.split()[1])
-        if monto_apuesta > user['saldo'] or monto_apuesta <= 0:
+        if monto_apuesta > db[uid]['saldo'] or monto_apuesta <= 0:
             return bot.reply_to(message, "❌ Saldo insuficiente o monto inválido.")
-
+        
         msg_dado = bot.send_dice(message.chat.id, emoji='🎲')
         valor_dado = msg_dado.dice.value
-        time.sleep(3)
-
+        time.sleep(3.5) # Tiempo para que ruede el dado
+        
         gano = False
-        # Sistema de Enganche: Si lleva 5 pérdidas, la 6ta gana forzado
-        if user.get("racha_derrotas", 0) >= 5:
+        # Estrategia de Enganche: Si lleva 5 pérdidas, la 6ta gana sí o sí
+        if db[uid].get("racha_derrotas", 0) >= 5:
             gano = True
-            user["racha_derrotas"] = 0
-        elif valor_dado == 6: # Probabilidad normal (1 de 6)
+            db[uid]["racha_derrotas"] = 0
+        elif valor_dado == 6:
             gano = True
-            user["racha_derrotas"] = 0
+            db[uid]["racha_derrotas"] = 0
         else:
-            gano = False
-            user["racha_derrotas"] = user.get("racha_derrotas", 0) + 1
+            db[uid]["racha_derrotas"] = db[uid].get("racha_derrotas", 0) + 1
 
         if gano:
             db[uid]['saldo'] += monto_apuesta
-            registrar_evento(uid, "Juego (Gane)", monto_apuesta, "🟢 + Saldo")
-            bot.send_message(message.chat.id, f"🎉 ¡Ganaste! Salió {valor_dado}. Has ganado `${monto_apuesta}`.")
+            bot.send_message(message.chat.id, f"🎉 ¡Ganaste! Salió {valor_dado}. Ganaste `${monto_apuesta}`.")
         else:
             db[uid]['saldo'] -= monto_apuesta
-            registrar_evento(uid, "Juego (Perdió)", monto_apuesta, "🔴 - Saldo")
-            bot.send_message(message.chat.id, f"💀 Perdiste. Salió {valor_dado}. Intenta de nuevo.")
+            bot.send_message(message.chat.id, f"💀 Perdiste. Salió {valor_dado}. ¡Suerte a la próxima!")
         
         guardar_db(db)
     except:
-        bot.reply_to(message, "❌ Uso correcto: `/apostar 50`")
+        bot.reply_to(message, "❌ Uso: `/apostar 10`")
 
-# --- MENÚ DE RECARGA (DONACIÓN) ---
-@bot.message_handler(func=lambda m: m.text == "💳 Recargar")
-def menu_pagos(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💳 Tarjeta (Stripe)", callback_data="pay_stripe"))
-    markup.add(types.InlineKeyboardButton("🔵 PayPal", callback_data="pay_paypal"))
-    
-    bot.send_message(message.chat.id, 
-        f"💎 *CENTRO DE DONACIONES*\n\n"
-        f"Concepto: {CONCEPTO_COBRO}\n\n"
-        f"Seleccione su método:", 
-        parse_mode="Markdown", reply_markup=markup)
+# --- MENÚ DE RECARGA (ESTRATEGIA ANTI-KYC) ---
+@bot.message_handler(func=lambda m: m.text == "💎 Recargar")
+def menu_recarga(message):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn_mx = types.InlineKeyboardButton("🇲🇽 Tarjeta Nacional (MXN)", callback_data="buy_mxn")
+    btn_int = types.InlineKeyboardButton("🌎 Tarjeta Internacional (USD)", callback_data="buy_usd")
+    markup.add(btn_mx, btn_int)
+    bot.send_message(message.chat.id, "💎 *CENTRO DE CARGA*\nSelecciona origen de tu tarjeta:", parse_mode="Markdown", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data in ["pay_stripe", "pay_paypal"])
-def prep_pago(call):
-    metodo = "Stripe" if call.data == "pay_stripe" else "PayPal"
-    msg = bot.send_message(call.message.chat.id, f"¿Monto de la donación vía {metodo}? (MXN)")
-    if call.data == "pay_stripe":
-        bot.register_next_step_handler(msg, checkout_stripe)
-    else:
-        bot.register_next_step_handler(msg, checkout_paypal)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+def seleccionar_monto(call):
+    moneda = "MXN" if "mxn" in call.data else "USD"
+    bot.answer_callback_query(call.id)
+    msg = bot.send_message(call.message.chat.id, f"¿Cuánto deseas recargar en **{moneda}**?")
+    bot.register_next_step_handler(msg, generar_pago, moneda)
 
-# (Lógicas de checkout_stripe y checkout_paypal integradas con CONCEPTO_COBRO)
-def checkout_stripe(message):
-    try:
-        monto = int(message.text)
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{'price_data': {'currency': 'mxn', 'product_data': {'name': CONCEPTO_COBRO}, 'unit_amount': monto * 100}, 'quantity': 1}],
-            mode='payment',
-            client_reference_id=str(message.from_user.id),
-            success_url="https://t.me/TuBot",
-        )
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("✅ Realizar Donación", url=session.url))
-        bot.send_message(message.chat.id, f"Link de Stripe generado (${monto}):", reply_markup=markup)
-    except: bot.send_message(message.chat.id, "❌ Error.")
-
-def checkout_paypal(message):
+def generar_pago(message, moneda):
     try:
         monto = float(message.text)
-        payment = paypalrestsdk.Payment({
-            "intent": "sale",
-            "payer": {"payment_method": "paypal"},
-            "redirect_urls": {"return_url": "https://t.me/TuBot", "cancel_url": "https://t.me/TuBot"},
-            "transactions": [{"item_list": {"items": [{"name": CONCEPTO_COBRO, "price": str(monto), "currency": "MXN", "quantity": 1}]}, "amount": {"total": str(monto), "currency": "MXN"}, "description": CONCEPTO_COBRO}]
-        })
-        if payment.create():
-            for link in payment.links:
-                if link.rel == "approval_url":
-                    markup = types.InlineKeyboardMarkup()
-                    markup.add(types.InlineKeyboardButton("🔵 Donar vía PayPal", url=link.href))
-                    bot.send_message(message.chat.id, f"Link de PayPal generado (${monto}):", reply_markup=markup)
-        else: bot.send_message(message.chat.id, "❌ Error en PayPal.")
-    except: bot.send_message(message.chat.id, "❌ Error.")
+        uid = str(message.from_user.id)
+        
+        # Estrategia Anti-KYC: Advertencia por monto
+        aviso = ""
+        if (moneda == "USD" and monto > LIMITE_KYC_USD) or (moneda == "MXN" and monto > LIMITE_KYC_MXN):
+            aviso = "\n\n⚠️ *AVISO:* Al ser un monto alto, podrían pedirte identificación (KYC). _Se recomienda hacer dos recargas pequeñas para evitarlo._"
 
-# --- RETIRO MANUAL (MÁS SEGURO) ---
+        orden = crear_orden_nowpayments(monto, moneda, uid)
+        if orden and 'invoice_url' in orden:
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(f"💳 PAGAR {monto} {moneda}", url=orden['invoice_url']))
+            bot.send_message(message.chat.id, f"✅ *Orden Generada*\nLiquida a: `Binance USDT`{aviso}", parse_mode="Markdown", reply_markup=markup)
+        else:
+            bot.send_message(message.chat.id, "❌ Error al generar link.")
+    except:
+        bot.send_message(message.chat.id, "❌ Monto inválido.")
+
+# --- CASHOUT (SALIDA: COINS -> TRANSFERENCIA) ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Retirar")
-def retirar(message):
+def retiro(message):
     db = cargar_db()
     uid = str(message.from_user.id)
-    if db[uid]['saldo'] <= 0: return bot.send_message(message.chat.id, "❌ Sin saldo.")
+    if db[uid]['saldo'] < 100:
+        return bot.send_message(message.chat.id, "❌ Mínimo: $100 MXN")
     
-    msg = bot.send_message(message.chat.id, "Escribe tu **CLABE Interbancaria** y **Nombre del Titular**:", parse_mode="Markdown")
-    bot.register_next_step_handler(msg, step_monto_retiro)
+    msg = bot.send_message(message.chat.id, "Escribe tu **CLABE** y **Nombre del Titular**:", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, enviar_solicitud_retiro)
 
-def step_monto_retiro(message):
+def enviar_solicitud_retiro(message):
     datos = message.text
-    msg = bot.send_message(message.chat.id, "¿Cuánto deseas retirar?")
-    bot.register_next_step_handler(msg, finalizar_retiro, datos)
-
-def finalizar_retiro(message, datos):
-    try:
-        monto = float(message.text)
-        db = cargar_db()
-        uid = str(message.from_user.id)
-        if monto > db[uid]['saldo']: return bot.send_message(message.chat.id, "❌ Saldo insuficiente.")
-
-        monto_final = monto * (1 - COMISION_RETIRO)
-        db[uid]['saldo'] -= monto
-        guardar_db(db)
-        registrar_evento(uid, "Retiro", monto, "⏳ Pendiente")
-
-        # Notificar al Admin
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("Confirmar Pago ✅", callback_data=f"pagado_{uid}_{monto}"))
-        bot.send_message(ADMIN_ID, f"🚨 *SOLICITUD DE RETIRO*\n\nUsuario: `{uid}`\nCagar: `${monto_final}`\nDatos: `{datos}`", parse_mode="Markdown", reply_markup=markup)
-        bot.send_message(message.chat.id, "✅ Solicitud enviada. Se te transferirá en un lapso de 24h.")
-    except: bot.send_message(message.chat.id, "❌ Error.")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('pagado_'))
-def admin_confirma(call):
-    _, uid, monto = call.data.split('_')
-    bot.send_message(uid, f"✅ Tu retiro de `${monto} MXN` ha sido enviado a tu banco.")
-    bot.edit_message_text(f"✅ Pago de {monto} realizado a {uid}", ADMIN_ID, call.message.message_id)
-
-# --- HISTORIAL Y PERFIL ---
-@bot.message_handler(func=lambda m: m.text == "📜 Historial")
-def ver_historial(message):
+    uid = str(message.from_user.id)
     db = cargar_db()
-    h = db.get(str(message.from_user.id), {}).get("historial", [])
-    if not h: return bot.send_message(message.chat.id, "📭 Sin movimientos.")
-    res = "📜 *ÚLTIMOS MOVIMIENTOS*\n\n"
-    for e in h[-10:]: res += f"• {e['fecha']} | {e['tipo']} ${e['monto']} | {e['estado']}\n"
-    bot.send_message(message.chat.id, res, parse_mode="Markdown")
+    monto = db[uid]['saldo']
+    monto_final = monto * (1 - COMISION_RETIRO)
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ Confirmar SPEI Enviado", callback_data=f"pago_{uid}_{monto}"))
+    
+    bot.send_message(ADMIN_ID, f"🚨 *RETIRO PENDIENTE*\n\nUser: `{uid}`\nEnviar: `${monto_final}`\nDatos: `{datos}`", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(message.chat.id, "⏳ Solicitud enviada. Recibirás tu SPEI en menos de 24h.")
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pago_'))
+def confirmar_retiro_admin(call):
+    _, uid, monto = call.data.split('_')
+    db = cargar_db()
+    db[uid]['saldo'] = 0
+    guardar_db(db)
+    bot.send_message(uid, f"✅ Tu retiro de `${monto}` ha sido procesado por SPEI.")
+    bot.edit_message_text(f"✅ Pagado a {uid}", call.message.chat.id, call.message.message_id)
+
+# --- COMANDO DE ADMINISTRADOR (CARGA MANUAL TRAS RECIBIR EN BINANCE) ---
+@bot.message_handler(commands=['dar'])
+def dar_saldo(message):
+    if str(message.from_user.id) == ADMIN_ID:
+        try:
+            _, target_id, cantidad = message.text.split()
+            db = cargar_db()
+            if target_id in db:
+                db[target_id]['saldo'] += float(cantidad)
+                db[target_id]['compras_exitosas'] += 1
+                guardar_db(db)
+                bot.send_message(target_id, f"✅ *¡RECARGA EXITOSA!*\nSe han acreditado `${cantidad} MXN`.", parse_mode="Markdown")
+                bot.reply_to(message, "💰 Saldo cargado correctamente.")
+        except:
+            bot.reply_to(message, "Uso: `/dar ID MONTO`")
+
+# --- PERFIL ---
 @bot.message_handler(func=lambda m: m.text == "👤 Perfil")
 def perfil(message):
     db = cargar_db()
-    u = db[str(message.from_user.id)]
-    bot.send_message(message.chat.id, f"👤 *PERFIL*\n💰 Saldo: `${u['saldo']} MXN`", parse_mode="Markdown")
+    u = db.get(str(message.from_user.id), {})
+    bot.send_message(message.chat.id, f"👤 *PERFIL*\n\n💰 Saldo: `${u.get('saldo', 0)} MXN`", parse_mode="Markdown")
 
 bot.infinity_polling()
