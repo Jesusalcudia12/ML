@@ -30,20 +30,28 @@ def guardar_db(db):
 
 # --- PASARELA DE PAGO (ENTRADA: CC -> BINANCE USDT) ---
 def crear_orden_plisio(monto, moneda, uid):
-    url = "https://plisio.net/api/v1/operations/withdraw" # Endpoint de ejemplo
+    # Convertimos a USD para la pasarela si es necesario
+    monto_pago = monto if moneda == "USD" else (monto / 20) 
+    
+    url = "https://plisio.net/api/v1/invoices/new"
     params = {
-        'api_key': 'TU_API_KEY_DE_PLISIO',
-        'currency': 'USDT_TRC20',
-        'amount': monto,
-        'type': 'cashout',
+        'api_key': PLISIO_API_KEY,
+        'currency': 'USDT_TRC20',     # Lo que recibes
+        'source_currency': 'USD',     # Moneda de cobro tarjeta
+        'source_amount': monto_pago,
         'order_number': f"PAY_{uid}_{int(time.time())}",
-        'description': 'Servicios Digitales Nexus'
+        'order_name': 'Nexus Digital Assets',
+        'email': 'pago@nexus.com' 
     }
-    response = requests.get("https://plisio.net/api/v1/invoices/new", params=params)
-     return response.json())
-
-except:
-     return None
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        if data['status'] == 'success':
+            return data['data']['invoice_url']
+        return None
+    except Exception as e:
+        print(f"Error en Plisio: {e}")
+        return None
 
 # --- COMANDOS DE INICIO ---
 @bot.message_handler(commands=['start'])
