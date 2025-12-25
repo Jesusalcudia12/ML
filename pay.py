@@ -40,7 +40,7 @@ def crear_orden_plisio(monto, moneda, uid):
         'description': 'Servicios Digitales Nexus'
     }
     response = requests.get("https://plisio.net/api/v1/invoices/new", params=params)
-     return response.json()
+     return response.json())
 
 except:
      return None
