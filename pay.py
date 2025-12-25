@@ -32,7 +32,7 @@ def guardar_db(db):
 # --- PASARELA DE PAGO ---
 def crear_orden_plisio(monto, moneda, uid):
     monto_pago = monto if moneda == "USD" else (monto / TIPO_CAMBIO) 
-    url = "https://plisio.net/api/v1/invoices/new"
+    url = "https://plisio.net/api/v1/invoices/new.json"
     params = {
         'api_key': PLISIO_API_KEY,
         'currency': 'USDT_TRC20',
