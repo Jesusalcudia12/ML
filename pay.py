@@ -137,23 +137,26 @@ def seleccionar_monto(call):
 
 def generar_pago(message, moneda):
     try:
-        monto = float(message.text)
-        uid = str(message.from_user.id)
+        # Limpiamos el texto por si el usuario pone '$' o espacios
+        texto_limpio = message.text.replace('$', '').replace(' ', '')
+        monto = float(texto_limpio)
         
-        # Estrategia Anti-KYC: Advertencia por monto
-        aviso = ""
-        if (moneda == "USD" and monto > LIMITE_KYC_USD) or (moneda == "MXN" and monto > LIMITE_KYC_MXN):
-            aviso = "\n\n⚠️ *AVISO:* Al ser un monto alto, podrían pedirte identificación (KYC). _Se recomienda hacer dos recargas pequeñas para evitarlo._"
+        if monto < 10: # Ejemplo de monto mínimo
+            bot.send_message(message.chat.id, "❌ El monto mínimo es de 10.")
+            return
 
-        orden = crear_orden_nowpayments(monto, moneda, uid)
-        if orden and 'invoice_url' in orden:
+        uid = message.from_user.id
+        url_pago = crear_orden_plisio(monto, moneda, uid)
+        
+        if url_pago:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(f"💳 PAGAR {monto} {moneda}", url=orden['invoice_url']))
-            bot.send_message(message.chat.id, f"✅ *Orden Generada*\nLiquida a: `Binance USDT`{aviso}", parse_mode="Markdown", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton("💳 PAGAR AHORA", url=url_pago))
+            bot.send_message(message.chat.id, f"✅ Orden creada por {monto} {moneda}.\nPresiona el botón para pagar con tu tarjeta:", reply_markup=markup)
         else:
-            bot.send_message(message.chat.id, "❌ Error al generar link.")
-    except:
-        bot.send_message(message.chat.id, "❌ Monto inválido.")
+            bot.send_message(message.chat.id, "❌ Error al generar el link. Intenta más tarde.")
+            
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Por favor, envía solo números. Ejemplo: `150`", parse_mode="Markdown")
 
 # --- CASHOUT (SALIDA: COINS -> TRANSFERENCIA) ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Retirar")
