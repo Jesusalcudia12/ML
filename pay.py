@@ -130,12 +130,25 @@ def menu_recarga(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def seleccionar_monto(call):
+    # IMPORTANTE: Detener el relojito de carga en el botón
+    bot.answer_callback_query(call.id)
+    
     moneda = "MXN" if "mxn" in call.data else "USD"
     
-    # 1. Enviamos la pregunta
-    msg = bot.send_message(call.message.chat.id, f"💰 ¿Cuánto deseas recargar en **{moneda}**?\n\n_Escribe solo el número (ejemplo: 100)_", parse_mode="Markdown")
+    # Borramos el mensaje anterior (el de elegir tarjeta) para limpiar el chat
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
+
+    # Enviamos la pregunta
+    msg = bot.send_message(
+        call.message.chat.id, 
+        f"💰 ¿Cuánto deseas recargar en **{moneda}**?\n\n_Escribe solo el número (ejemplo: 100)_", 
+        parse_mode="Markdown"
+    )
     
-    # 2. 'Congelamos' al usuario para que su próximo mensaje vaya a la función 'generar_pago'
+    # Registramos el siguiente paso
     bot.register_next_step_handler(msg, generar_pago, moneda)
 
 def generar_pago(message, moneda):
