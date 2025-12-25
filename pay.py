@@ -9,7 +9,7 @@ from datetime import datetime
 # --- CONFIGURACIÓN ---
 TOKEN = "8531717834:AAExJEm2EI6Zce7ZKtyJfKb-qHPuMbCZyoE"
 ADMIN_ID = "6280594821"  # Tu ID de Telegram
-PLISIO_API_KEY = "TU_API_KEY_DE_PLISIO"
+PLISIO_API_KEY = "N8pUsjMMygSzk3NytnvW1rHjRQq6tw0U3q7BgAC9yxlzHOwM8eABpsAJh5HDYK4k"
 
 # Estrategias de límites para evitar KYC
 LIMITE_KYC_USD = 50.0 
