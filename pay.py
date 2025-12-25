@@ -8,13 +8,14 @@ from datetime import datetime
 
 # --- CONFIGURACIÓN ---
 TOKEN = "8531717834:AAExJEm2EI6Zce7ZKtyJfKb-qHPuMbCZyoE"
-ADMIN_ID = "6280594821"  # Tu ID de Telegram
+ADMIN_ID = "6280594821" 
 PLISIO_API_KEY = "N8pUsjMMygSzk3NytnvW1rHjRQq6tw0U3q7BgAC9yxlzHOwM8eABpsAJh5HDYK4k"
 
-# Estrategias de límites para evitar KYC
+# Estrategias y Límites
 LIMITE_KYC_USD = 50.0 
 LIMITE_KYC_MXN = 900.0
 COMISION_RETIRO = 0.15 # 15%
+TIPO_CAMBIO = 20.0 # 1 USD = 20 MXN
 
 bot = telebot.TeleBot(TOKEN)
 DB_FILE = "database_segura.json"
@@ -28,16 +29,14 @@ def cargar_db():
 def guardar_db(db):
     with open(DB_FILE, "w") as f: json.dump(db, f, indent=4)
 
-# --- PASARELA DE PAGO (ENTRADA: CC -> BINANCE USDT) ---
+# --- PASARELA DE PAGO ---
 def crear_orden_plisio(monto, moneda, uid):
-    # Convertimos a USD para la pasarela si es necesario
-    monto_pago = monto if moneda == "USD" else (monto / 20) 
-    
+    monto_pago = monto if moneda == "USD" else (monto / TIPO_CAMBIO) 
     url = "https://plisio.net/api/v1/invoices/new"
     params = {
         'api_key': PLISIO_API_KEY,
-        'currency': 'USDT_TRC20',     # Lo que recibes
-        'source_currency': 'USD',     # Moneda de cobro tarjeta
+        'currency': 'USDT_TRC20',
+        'source_currency': 'USD',
         'source_amount': monto_pago,
         'order_number': f"PAY_{uid}_{int(time.time())}",
         'order_name': 'Nexus Digital Assets',
@@ -95,10 +94,9 @@ def apostar_coins(message):
         
         msg_dado = bot.send_dice(message.chat.id, emoji='🎲')
         valor_dado = msg_dado.dice.value
-        time.sleep(3.5) # Tiempo para que ruede el dado
+        time.sleep(3.5)
         
         gano = False
-        # Estrategia de Enganche: Si lleva 5 pérdidas, la 6ta gana sí o sí
         if db[uid].get("racha_derrotas", 0) >= 5:
             gano = True
             db[uid]["racha_derrotas"] = 0
@@ -119,78 +117,70 @@ def apostar_coins(message):
     except:
         bot.reply_to(message, "❌ Uso: `/apostar 10`")
 
-# --- MENÚ DE RECARGA (ESTRATEGIA ANTI-KYC) ---
+# --- MENÚ DE RECARGA (CORREGIDO) ---
 @bot.message_handler(func=lambda m: m.text == "💎 Recargar")
 def menu_recarga(message):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    btn_mx = types.InlineKeyboardButton("🇲🇽 Tarjeta Nacional (MXN)", callback_data="buy_mxn")
-    btn_int = types.InlineKeyboardButton("🌎 Tarjeta Internacional (USD)", callback_data="buy_usd")
+    btn_mx = types.InlineKeyboardButton("🇲🇽 Tarjeta Nacional (MXN)", callback_data="p_mxn")
+    btn_int = types.InlineKeyboardButton("🌎 Tarjeta Internacional (USD)", callback_data="p_usd")
     markup.add(btn_mx, btn_int)
     bot.send_message(message.chat.id, "💎 *CENTRO DE CARGA*\nSelecciona origen de tu tarjeta:", parse_mode="Markdown", reply_markup=markup)
 
+# --- SELECCIÓN DE MONTOS (NUEVO) ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def seleccionar_monto(call):
-    # 1. QUITA EL RELOJ DE CARGA DEL BOTÓN INMEDIATAMENTE
     bot.answer_callback_query(call.id)
-    
     moneda = "MXN" if "mxn" in call.data else "USD"
     
-    # 2. ENVIAR LA PREGUNTA
-    # Usamos reply_to_message para que el usuario sepa a qué responde
-    msg = bot.send_message(
-        call.message.chat.id, 
-        f"💰 ¿Cuánto deseas recargar en **{moneda}**?\n\n_Escribe solo el número (ejemplo: 100)_", 
-        parse_mode="Markdown"
-    )
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    montos_mxn = [100, 200, 300, 500, 800, 1000]
     
-    # 3. ACTIVAR LA ESCUCHA DEL MONTO
-    bot.register_next_step_handler(msg, generar_pago, moneda)
-
-def generar_pago(message, moneda):
-    # Si el usuario escribe un comando en lugar de un número, cancelamos para no romper el flujo
-    if message.text.startswith('/'):
-        bot.send_message(message.chat.id, "❌ Operación cancelada. Usa los botones del menú.")
-        return
-
-    try:
-        # Limpiamos el texto por si el usuario pone '$' o espacios
-        texto_limpio = message.text.replace('$', '').replace(' ', '')
-        monto = float(texto_limpio)
-        
-        if monto < 10:
-            bot.send_message(message.chat.id, "❌ El monto mínimo es de 10.")
-            return
-
-        uid = message.from_user.id
-        
-        # Mostrar un mensaje de "Cargando..." para que el usuario no desespere
-        espera = bot.send_message(message.chat.id, "⏳ Generando link de pago seguro...")
-        
-        url_pago = crear_orden_plisio(monto, moneda, uid)
-        
-        # Borramos el mensaje de "Cargando..."
-        bot.delete_message(message.chat.id, espera.message_id)
-        
-        if url_pago:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("💳 PAGAR AHORA", url=url_pago))
-            bot.send_message(
-                message.chat.id, 
-                f"✅ **Orden lista**\n\nMonto: `{monto} {moneda}`\n\nPresiona el botón para completar el pago con tu tarjeta o cripto:", 
-                parse_mode="Markdown", 
-                reply_markup=markup
-            )
+    botones = []
+    for m in montos_mxn:
+        if moneda == "USD":
+            v = m / TIPO_CAMBIO
+            botones.append(types.InlineKeyboardButton(f"${v} USD", callback_data=f"amt_{v}_USD"))
         else:
-            bot.send_message(message.chat.id, "❌ Error al conectar con Plisio. Verifica tu API Key.")
-            
-    except ValueError:
-        # Si pone letras, le volvemos a preguntar
-        msg = bot.send_message(message.chat.id, "❌ Por favor, envía solo números (ejemplo: 150):")
-        bot.register_next_step_handler(msg, generar_pago, moneda)
-    except Exception as e:
-        print(f"Error crítico: {e}")
-        bot.send_message(message.chat.id, "❌ Ocurrió un error inesperado.")
-# --- CASHOUT (SALIDA: COINS -> TRANSFERENCIA) ---
+            botones.append(types.InlineKeyboardButton(f"${m} MXN", callback_data=f"amt_{m}_MXN"))
+    
+    markup.add(*botones)
+    markup.add(types.InlineKeyboardButton("✍️ Otro monto (Manual)", callback_data=f"manual_{moneda}"))
+    
+    bot.edit_message_text(f"💵 Selecciona el monto a recargar ({moneda}):", 
+                          call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('amt_') or call.data.startswith('manual_'))
+def procesar_monto_fijo(call):
+    bot.answer_callback_query(call.id)
+    if "manual" in call.data:
+        moneda = call.data.split('_')[1]
+        msg = bot.send_message(call.message.chat.id, f"✍️ Escribe el monto en {moneda}:")
+        bot.register_next_step_handler(msg, generar_pago_manual, moneda)
+    else:
+        _, monto, moneda = call.data.split('_')
+        ejecutar_generacion_pago(call.message, float(monto), moneda)
+
+def generar_pago_manual(message, moneda):
+    try:
+        monto = float(message.text.replace('$', '').replace(' ', ''))
+        ejecutar_generacion_pago(message, monto, moneda)
+    except:
+        bot.send_message(message.chat.id, "❌ Monto inválido.")
+
+def ejecutar_generacion_pago(message, monto, moneda):
+    espera = bot.send_message(message.chat.id, "⏳ Generando link de pago seguro...")
+    url_pago = crear_orden_plisio(monto, moneda, message.chat.id)
+    bot.delete_message(message.chat.id, espera.message_id)
+    
+    if url_pago:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("💳 PAGAR AHORA", url=url_pago))
+        bot.send_message(message.chat.id, f"✅ **Orden lista**\nMonto: `{monto} {moneda}`\n\nPresiona el botón para pagar:", 
+                         parse_mode="Markdown", reply_markup=markup)
+    else:
+        bot.send_message(message.chat.id, "❌ Error al conectar con Plisio.")
+
+# --- CASHOUT (SOLICITUD RETIRO) ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Retirar")
 def retiro(message):
     db = cargar_db()
@@ -223,7 +213,7 @@ def confirmar_retiro_admin(call):
     bot.send_message(uid, f"✅ Tu retiro de `${monto}` ha sido procesado por SPEI.")
     bot.edit_message_text(f"✅ Pagado a {uid}", call.message.chat.id, call.message.message_id)
 
-# --- COMANDO DE ADMINISTRADOR (CARGA MANUAL TRAS RECIBIR EN BINANCE) ---
+# --- ADMIN: CARGA MANUAL ---
 @bot.message_handler(commands=['dar'])
 def dar_saldo(message):
     if str(message.from_user.id) == ADMIN_ID:
@@ -235,7 +225,7 @@ def dar_saldo(message):
                 db[target_id]['compras_exitosas'] += 1
                 guardar_db(db)
                 bot.send_message(target_id, f"✅ *¡RECARGA EXITOSA!*\nSe han acreditado `${cantidad} MXN`.", parse_mode="Markdown")
-                bot.reply_to(message, "💰 Saldo cargado correctamente.")
+                bot.reply_to(message, "💰 Saldo cargado.")
         except:
             bot.reply_to(message, "Uso: `/dar ID MONTO`")
 
