@@ -128,11 +128,14 @@ def menu_recarga(message):
     markup.add(btn_mx, btn_int)
     bot.send_message(message.chat.id, "💎 *CENTRO DE CARGA*\nSelecciona origen de tu tarjeta:", parse_mode="Markdown", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
+@bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def seleccionar_monto(call):
     moneda = "MXN" if "mxn" in call.data else "USD"
-    bot.answer_callback_query(call.id)
-    msg = bot.send_message(call.message.chat.id, f"¿Cuánto deseas recargar en **{moneda}**?")
+    
+    # 1. Enviamos la pregunta
+    msg = bot.send_message(call.message.chat.id, f"💰 ¿Cuánto deseas recargar en **{moneda}**?\n\n_Escribe solo el número (ejemplo: 100)_", parse_mode="Markdown")
+    
+    # 2. 'Congelamos' al usuario para que su próximo mensaje vaya a la función 'generar_pago'
     bot.register_next_step_handler(msg, generar_pago, moneda)
 
 def generar_pago(message, moneda):
