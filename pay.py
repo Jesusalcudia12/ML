@@ -31,8 +31,8 @@ def guardar_db(db):
 
 # --- PASARELA DE PAGO ---
 def crear_orden_plisio(monto, moneda, uid):
-    monto_pago = monto if moneda == "USD" else (monto / TIPO_CAMBIO) 
-    url = "https://plisio.net/api/v1/invoices/new.json"
+    monto_pago = monto if moneda == "USD" else (monto / 20) 
+    url = "https://plisio.net/api/v1/invoices/new"
     params = {
         'api_key': PLISIO_API_KEY,
         'currency': 'USDT_TRC20',
@@ -44,12 +44,17 @@ def crear_orden_plisio(monto, moneda, uid):
     }
     try:
         response = requests.get(url, params=params, timeout=10)
+        # ESTO TE MOSTRARÁ EL ERROR REAL EN TERMUX
+        if response.status_code != 200:
+            print(f"Error de Plisio (Código {response.status_code}): {response.text}")
+            return None
+            
         data = response.json()
         if data['status'] == 'success':
             return data['data']['invoice_url']
         return None
     except Exception as e:
-        print(f"Error en Plisio: {e}")
+        print(f"Error de conexión: {e}")
         return None
 
 # --- COMANDOS DE INICIO ---
