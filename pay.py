@@ -130,50 +130,66 @@ def menu_recarga(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('p_'))
 def seleccionar_monto(call):
-    # IMPORTANTE: Detener el relojito de carga en el botón
+    # 1. QUITA EL RELOJ DE CARGA DEL BOTÓN INMEDIATAMENTE
     bot.answer_callback_query(call.id)
     
     moneda = "MXN" if "mxn" in call.data else "USD"
     
-    # Borramos el mensaje anterior (el de elegir tarjeta) para limpiar el chat
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except:
-        pass
-
-    # Enviamos la pregunta
+    # 2. ENVIAR LA PREGUNTA
+    # Usamos reply_to_message para que el usuario sepa a qué responde
     msg = bot.send_message(
         call.message.chat.id, 
         f"💰 ¿Cuánto deseas recargar en **{moneda}**?\n\n_Escribe solo el número (ejemplo: 100)_", 
         parse_mode="Markdown"
     )
     
-    # Registramos el siguiente paso
+    # 3. ACTIVAR LA ESCUCHA DEL MONTO
     bot.register_next_step_handler(msg, generar_pago, moneda)
 
 def generar_pago(message, moneda):
+    # Si el usuario escribe un comando en lugar de un número, cancelamos para no romper el flujo
+    if message.text.startswith('/'):
+        bot.send_message(message.chat.id, "❌ Operación cancelada. Usa los botones del menú.")
+        return
+
     try:
         # Limpiamos el texto por si el usuario pone '$' o espacios
         texto_limpio = message.text.replace('$', '').replace(' ', '')
         monto = float(texto_limpio)
         
-        if monto < 10: # Ejemplo de monto mínimo
+        if monto < 10:
             bot.send_message(message.chat.id, "❌ El monto mínimo es de 10.")
             return
 
         uid = message.from_user.id
+        
+        # Mostrar un mensaje de "Cargando..." para que el usuario no desespere
+        espera = bot.send_message(message.chat.id, "⏳ Generando link de pago seguro...")
+        
         url_pago = crear_orden_plisio(monto, moneda, uid)
+        
+        # Borramos el mensaje de "Cargando..."
+        bot.delete_message(message.chat.id, espera.message_id)
         
         if url_pago:
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("💳 PAGAR AHORA", url=url_pago))
-            bot.send_message(message.chat.id, f"✅ Orden creada por {monto} {moneda}.\nPresiona el botón para pagar con tu tarjeta:", reply_markup=markup)
+            bot.send_message(
+                message.chat.id, 
+                f"✅ **Orden lista**\n\nMonto: `{monto} {moneda}`\n\nPresiona el botón para completar el pago con tu tarjeta o cripto:", 
+                parse_mode="Markdown", 
+                reply_markup=markup
+            )
         else:
-            bot.send_message(message.chat.id, "❌ Error al generar el link. Intenta más tarde.")
+            bot.send_message(message.chat.id, "❌ Error al conectar con Plisio. Verifica tu API Key.")
             
     except ValueError:
-        bot.send_message(message.chat.id, "❌ Por favor, envía solo números. Ejemplo: `150`", parse_mode="Markdown")
-
+        # Si pone letras, le volvemos a preguntar
+        msg = bot.send_message(message.chat.id, "❌ Por favor, envía solo números (ejemplo: 150):")
+        bot.register_next_step_handler(msg, generar_pago, moneda)
+    except Exception as e:
+        print(f"Error crítico: {e}")
+        bot.send_message(message.chat.id, "❌ Ocurrió un error inesperado.")
 # --- CASHOUT (SALIDA: COINS -> TRANSFERENCIA) ---
 @bot.message_handler(func=lambda m: m.text == "🏦 Retirar")
 def retiro(message):
