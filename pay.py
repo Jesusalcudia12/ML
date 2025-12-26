@@ -31,20 +31,30 @@ def guardar_db(db):
 
 # --- PASARELA DE PAGO ---
 def crear_orden_plisio(monto, moneda, uid):
+    # Convertimos el monto (asumiendo que recibes MXN y quieres cobrar el equivalente en USD)
     monto_pago = monto if moneda == "USD" else (monto / 20) 
-    url = "https://plisio.net/api/v1/invoices/new"
+    
+    # URL oficial de la API de Plisio
+    url = "https://api.plisio.net/api/v1/invoices/new"
+    
     params = {
         'api_key': PLISIO_API_KEY,
         'currency': 'USDT_TRC20',
         'source_currency': 'USD',
-        'source_amount': monto_pago,
+        'source_amount': f"{monto_pago:.2f}", # Formateado a 2 decimales
         'order_number': f"PAY_{uid}_{int(time.time())}",
         'order_name': 'Nexus Digital Assets',
-        'email': 'pago@nexus.com' 
+        'email': 'pago@nexus.com',
+        'callback_url': 'https://google.com' # URL de relleno ya que validas manualmente
     }
+    
     try:
-        response = requests.get(url, params=params, timeout=10)
-        # ESTO TE MOSTRARÁ EL ERROR REAL EN TERMUX
+        # Añadimos verify=False solo si Termux sigue dando problemas de SSL
+        response = requests.get(url, params=params, timeout=15)
+        
+        # Log para depuración en Termux
+        print(f"DEBUG: Enviando solicitud a Plisio para usuario {uid}...")
+        
         if response.status_code != 200:
             print(f"Error de Plisio (Código {response.status_code}): {response.text}")
             return None
@@ -52,9 +62,12 @@ def crear_orden_plisio(monto, moneda, uid):
         data = response.json()
         if data['status'] == 'success':
             return data['data']['invoice_url']
-        return None
+        else:
+            print(f"Respuesta de Plisio fallida: {data.get('data')}")
+            return None
+            
     except Exception as e:
-        print(f"Error de conexión: {e}")
+        print(f"Error crítico de conexión: {e}")
         return None
 
 # --- COMANDOS DE INICIO ---
