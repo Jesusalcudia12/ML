@@ -39,7 +39,7 @@ def crear_orden_plisio(monto, moneda, uid):
     
     params = {
         'api_key': PLISIO_API_KEY,
-        'currency': 'USDT_TRC20',
+        'currency': 'USDT_TRX',
         'source_currency': 'USD',
         'source_amount': f"{monto_pago:.2f}", # Formateado a 2 decimales
         'order_number': f"PAY_{uid}_{int(time.time())}",
